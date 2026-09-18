@@ -13,9 +13,7 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from curl_cffi import requests
 
 from nse_downloader.config import (
     BACKOFF_FACTOR,
@@ -64,22 +62,9 @@ class NSEClient:
     # ------------------------------------------------------------------
 
     def _create_session(self) -> requests.Session:
-        """Create a new requests.Session with browser headers and retry adapter."""
-        session = requests.Session()
+        """Create a new requests.Session with browser TLS impersonation."""
+        session = requests.Session(impersonate="chrome")
         session.headers.update(DEFAULT_HEADERS)
-
-        # Mount retry adapter for automatic retries on specific HTTP codes
-        retry_strategy = Retry(
-            total=self._max_retries,
-            backoff_factor=self._backoff_factor,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"],
-            raise_on_status=False,
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-
         return session
 
     def _init_session(self) -> None:
@@ -104,7 +89,7 @@ class NSEClient:
                     list(self._session.cookies.keys()),
                 )
                 time.sleep(0.8)   # brief pause between warm-up requests
-            except requests.RequestException as exc:
+            except requests.exceptions.RequestException as exc:
                 logger.warning("Warm-up request failed for %s: %s", url, exc)
 
         if self._session.cookies:
@@ -169,13 +154,20 @@ class NSEClient:
         self._ensure_session()
         assert self._session is not None  # for type checker
 
-        # Update referer for this specific dataset
-        self._session.headers["Referer"] = dataset.referer
-
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self._max_retries + 1):
             self._rate_limit()
+            
+            # Rebuild headers for each attempt (in case session was refreshed)
+            req_headers = dict(self._session.headers)
+            req_headers.update({
+                "Referer": dataset.referer,
+                "Accept": "*/*",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+            })
 
             logger.info(
                 "Fetching %s (attempt %d/%d): %s",
@@ -188,6 +180,7 @@ class NSEClient:
             try:
                 response = self._session.get(
                     dataset.api_url,
+                    headers=req_headers,
                     timeout=self._timeout,
                 )
                 self._last_request_time = time.time()
@@ -201,7 +194,6 @@ class NSEClient:
                     )
                     self._refresh_session()
                     assert self._session is not None
-                    self._session.headers["Referer"] = dataset.referer
                     continue
 
                 response.raise_for_status()
@@ -210,9 +202,15 @@ class NSEClient:
                 try:
                     data = response.json()
                 except ValueError as exc:
-                    raise NSEClientError(
-                        f"Invalid JSON for {dataset.name}: {exc}"
-                    ) from exc
+                    last_error = exc
+                    logger.warning(
+                        "Invalid JSON for %s (likely Cloudflare HTML block). "
+                        "Refreshing session and retrying...",
+                        dataset.name
+                    )
+                    self._refresh_session()
+                    assert self._session is not None
+                    continue
 
                 logger.info(
                     "Successfully fetched %s (%d bytes)",

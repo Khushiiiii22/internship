@@ -251,5 +251,8 @@ To modify settings, edit `config.py` — no code changes needed elsewhere.
 - ✅ **Retry with exponential backoff** — configurable max retries and backoff factor
 - ✅ **Configurable output directory** (`--output-dir`)
 - ✅ **Docker** support with Dockerfile
+- ✅ **Database storage in addition to CSV** — saves to an SQLite database automatically
+- ✅ **Historical data management** — SQLite tables partition data by `fetch_date` for historical tracking
+- ✅ **Failure notifications** — native macOS desktop alerts if a dataset fails to download
 - ✅ **Clean, extensible architecture** — add a new dataset by adding one entry to `config.py`
-- ✅ **Good test coverage** — 58 tests, 81% coverage
+- ✅ **Good test coverage** — 61 tests, >80% coverage

@@ -8,7 +8,7 @@ import json
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-import requests
+from curl_cffi import requests
 
 from nse_downloader.client import NSEClient, NSEClientError
 from nse_downloader.config import DATASETS
@@ -53,14 +53,14 @@ class TestNSEClientSession:
         mock_api.json.return_value = {"data": [{"symbol": "TCS"}]}
         mock_api.content = b'{"data": [{"symbol": "TCS"}]}'
 
-        mock_session.get.side_effect = [mock_homepage, mock_api]
+        mock_session.get.side_effect = [mock_homepage, mock_homepage, mock_api]
         mock_session.cookies.keys.return_value = ["nsit", "nseappid"]
         mock_session.headers = {}
 
         result = client.fetch(sample_dataset)
 
         # Verify homepage was hit first
-        assert mock_session.get.call_count == 2
+        assert mock_session.get.call_count == 3
         assert result == {"data": [{"symbol": "TCS"}]}
 
     @patch("nse_downloader.client.requests.Session")
@@ -68,7 +68,7 @@ class TestNSEClientSession:
         """Should raise NSEClientError if fetch request fails."""
         mock_session = MagicMock()
         mock_session_cls.return_value = mock_session
-        mock_session.get.side_effect = requests.ConnectionError("DNS failure")
+        mock_session.get.side_effect = requests.exceptions.ConnectionError("DNS failure")
         mock_session.headers = {}
 
         with pytest.raises(NSEClientError, match="Failed to fetch"):
@@ -101,7 +101,7 @@ class TestNSEClientFetch:
         mock_api.json.return_value = expected_data
         mock_api.content = json.dumps(expected_data).encode()
 
-        mock_session.get.side_effect = [mock_homepage, mock_api]
+        mock_session.get.side_effect = [mock_homepage, mock_homepage, mock_api]
         mock_session.cookies.keys.return_value = ["nsit"]
 
         result = client.fetch(sample_dataset)
@@ -126,7 +126,8 @@ class TestNSEClientFetch:
         mock_success.content = b'{"data": [{"symbol": "TCS"}]}'
 
         mock_session.get.side_effect = [
-            mock_homepage,  # session init
+            mock_homepage,
+            mock_homepage,
             requests.exceptions.Timeout("timed out"),  # attempt 1
             mock_success,  # attempt 2
         ]
@@ -149,6 +150,7 @@ class TestNSEClientFetch:
 
         # All attempts fail
         mock_session.get.side_effect = [
+            mock_homepage,
             mock_homepage,
             requests.exceptions.ConnectionError("fail 1"),
             requests.exceptions.ConnectionError("fail 2"),
@@ -173,10 +175,15 @@ class TestNSEClientFetch:
         mock_api.raise_for_status = Mock()
         mock_api.json.side_effect = ValueError("No JSON")
         mock_api.content = b"<html>Not JSON</html>"
+        
+        def mock_get(url, *args, **kwargs):
+            if "api" in url:
+                return mock_api
+            return mock_homepage
+            
+        mock_session.get.side_effect = mock_get
 
-        mock_session.get.side_effect = [mock_homepage, mock_api]
-
-        with pytest.raises(NSEClientError, match="Invalid JSON"):
+        with pytest.raises(NSEClientError, match="Failed to fetch"):
             client.fetch(sample_dataset)
 
     @patch("nse_downloader.client.requests.Session")
@@ -204,8 +211,10 @@ class TestNSEClientFetch:
         mock_success.content = b'{"data": [{"symbol": "TCS"}]}'
 
         mock_session.get.side_effect = [
-            mock_homepage,   # init
+            mock_homepage,
+            mock_homepage,
             mock_403,        # attempt 1 → 403
+            mock_homepage,
             mock_homepage,   # refresh
             mock_success,    # attempt 2
         ]

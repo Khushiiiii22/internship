@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 
 from nse_downloader.client import NSEClient, NSEClientError
 from nse_downloader.config import ALL_DATASET_KEYS, DATASETS, DatasetConfig
+from nse_downloader.db import DatabaseStorage
+from nse_downloader.notifications import send_failure_notification
 from nse_downloader.storage import CSVStorage, StorageError
 from nse_downloader.validator import (
     DataValidator,
@@ -72,6 +74,10 @@ class NSEDownloader:
         self._client = client or NSEClient()
         self._validator = DataValidator()
         self._storage = CSVStorage(output_dir=output_dir)
+        
+        # Determine db path based on output_dir
+        db_path = (output_dir or Path("data")) / "market_data.db"
+        self._db_storage = DatabaseStorage(db_path=db_path)
 
     def download_all(self) -> DownloadSummary:
         """Download all configured datasets.
@@ -166,8 +172,13 @@ class NSEDownloader:
                 df, dataset.csv_prefix, target_date
             )
 
+            # 4. Store in SQLite Database for Historical tracking
+            self._db_storage.save_dataframe(
+                df, dataset.csv_prefix, target_date or date.today()
+            )
+
             logger.info(
-                "✓ %s: %d records saved to %s",
+                "✓ %s: %d records saved to %s (and DB)",
                 dataset.name,
                 report.valid_record_count,
                 filepath,
@@ -183,6 +194,7 @@ class NSEDownloader:
 
         except NSEClientError as exc:
             logger.error("✗ %s: Fetch failed — %s", dataset.name, exc)
+            send_failure_notification(dataset.name, f"Fetch failed: {exc}")
             return DownloadResult(
                 dataset_key=dataset_key,
                 success=False,
@@ -191,6 +203,7 @@ class NSEDownloader:
 
         except ValidationError as exc:
             logger.error("✗ %s: Validation failed — %s", dataset.name, exc)
+            send_failure_notification(dataset.name, f"Validation failed: {exc}")
             return DownloadResult(
                 dataset_key=dataset_key,
                 success=False,
@@ -199,6 +212,7 @@ class NSEDownloader:
 
         except StorageError as exc:
             logger.error("✗ %s: Storage failed — %s", dataset.name, exc)
+            send_failure_notification(dataset.name, f"Storage failed: {exc}")
             return DownloadResult(
                 dataset_key=dataset_key,
                 success=False,
@@ -213,6 +227,7 @@ class NSEDownloader:
                 exc,
                 exc_info=True,
             )
+            send_failure_notification(dataset.name, f"Unexpected error: {type(exc).__name__}")
             return DownloadResult(
                 dataset_key=dataset_key,
                 success=False,
